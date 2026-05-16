@@ -1,0 +1,74 @@
+name: Trust Boundary Privileged Reusable
+
+on:
+  workflow_call:
+    inputs:
+      scenario:
+        required: true
+        type: string
+      requested_mode:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Capture reusable workflow execution context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCENARIO: ${{ inputs.scenario }}
+          REQUESTED_MODE: ${{ inputs.requested_mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p reusable-trust
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.error, urllib.request
+          token = os.environ["GH_TOKEN"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          headers = {
+              "Authorization": "Bearer " + token,
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+          def probe(name, method, url, body=None):
+              req = urllib.request.Request(url, data=body, method=method, headers=headers)
+              if body is not None:
+                  req.add_header("Content-Type", "application/json")
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      return {"name": name, "status": resp.status, "headers": dict(resp.headers)}
+              except urllib.error.HTTPError as e:
+                  return {"name": name, "status": e.code, "body": e.read().decode("utf-8", "replace")[:1000], "headers": dict(e.headers)}
+          result = {
+              "scenario": os.environ["SCENARIO"],
+              "requested_mode": os.environ["REQUESTED_MODE"],
+              "repository": repo,
+              "repository_id": os.environ["GITHUB_REPOSITORY_ID"],
+              "actor": os.environ["GITHUB_ACTOR"],
+              "actor_id": os.environ["GITHUB_ACTOR_ID"],
+              "ref": os.environ["GITHUB_REF"],
+              "sha": os.environ["GITHUB_SHA"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "event_name": os.environ["GITHUB_EVENT_NAME"],
+              "api_probes": [
+                  probe("repo_get", "GET", f"https://api.github.com/repos/{repo}"),
+                  probe("contents_readme_get", "GET", f"https://api.github.com/repos/{repo}/contents/README.md"),
+                  probe("contents_write_validation_probe", "PUT", f"https://api.github.com/repos/{repo}/contents/.github/trust-boundary-write-probe.txt", json.dumps({"message":"trust boundary write validation probe","content":"not-valid-base64!!!"}).encode()),
+              ],
+          }
+          pathlib.Path("reusable-trust/reusable-context.json").write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reusable-trust-${{ inputs.scenario }}
+          path: reusable-trust/*
+          retention-days: 7
